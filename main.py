@@ -1,7 +1,8 @@
 import sys
 
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton, QStackedWidget, QHBoxLayout
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton, QStackedWidget, QHBoxLayout, \
+    QComboBox
 from PyQt6.QtGui import QFont, QPainter, QColor, QIcon, QPixmap
 
 
@@ -30,6 +31,7 @@ class MainApp(QWidget):
         self.menu.new_game.connect(self.start_new_game)
         self.menu.options.connect(self.open_options)
         self.options_screen.back_to_menu.connect(self.back_to_menu)
+        self.options_screen.change_resolution.connect(self.change_res)
 
     def start_new_game(self):
         self.stacked_widget.setCurrentIndex(1)
@@ -40,6 +42,16 @@ class MainApp(QWidget):
 
     def back_to_menu(self):
         self.stacked_widget.setCurrentIndex(0)
+
+    def change_res(self, text):
+        if text == "Fullscreen":
+            self.showFullScreen()
+        else:
+            self.showNormal()
+            resolution = text.split("x")
+            width = int(resolution[0])
+            height = int(resolution[1])
+            self.setFixedSize(width, height)
 
 class Player:
     def __init__(self, name):
@@ -56,9 +68,6 @@ class Game(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0))
-
-
-
         window_width = self.width()
         window_height = self.height()
         if window_width / window_height > self.width() / self.height():
@@ -72,8 +81,14 @@ class Game(QWidget):
 
         painter.fillRect(x_offset, y_offset, game_width, game_height, QColor(40, 40, 40))
 
+        if self.player_x < 0:
+            self.player_x = 0
+        elif self.player_x > 8:
+            self.player_x = 8
+
         pixel_x = x_offset + int(self.player_x * game_width / self.tile_size)
         pixel_y = y_offset + int(self.player_y * game_width / self.tile_size)
+        print("Player position on tile", self.player_x, self.player_y)
 
         #painter.drawRect(pixel_x, pixel_y, int(game_width / self.tile_size), int(game_width / self.tile_size))
         #painter.setBrush(QColor(255, 0, 255))painter.setPen(Qt.PenStyle.NoPen)
@@ -102,17 +117,53 @@ class Game(QWidget):
 
 class Options(QWidget):
     back_to_menu = pyqtSignal()
-
+    change_resolution = pyqtSignal(str)
     def __init__(self):
         super().__init__()
+        self.setStyleSheet("""
+                            QPushButton{
+                                background-color: rgb(255, 255, 255); 
+                                color: rgb(0, 0, 0); 
+                                border-radius: 0px;
+                                font-size: 18px;
+                                font-weight: bold;
+                                font-family: Arial;
+                                width: 200px;
+                                height: 60px;
+                            }
+                            QComboBox{
+                                background-color: rgb(255, 255, 255);
+                                color: black;
+                                border-radius: 0px;
+                                font-size: 18px;
+                                font-weight: bold;
+                                font-family: Arial;
+                                width: 200px;
+                                height: 60px;
+                            }
+                            QComboBox QAbstractItemView {
+                                background-color: white;
+                                selection-background-color: lightgray;
+                                color: black;
+                            }
+                            QPushButton:hover{
+                                background-color: rgb(200, 200, 200);
+                            }
+                        """)
         layout = QVBoxLayout()
         title = QLabel("Options", self)
         title.setStyleSheet("color: white; font-size: 24px;")
+        self.res_options = QComboBox(self)
+        self.res_options.addItems(["360x640", "720x1280", "1080x1920", "Fullscreen"])
+        #self.confirm_btn = QPushButton("Confrim settings", self)
         self.back_btn = QPushButton("Back", self)
         self.back_btn.clicked.connect(lambda: self.back_to_menu.emit())
 
         layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.back_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.res_options, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.res_options.currentTextChanged.connect(lambda text: self.change_resolution.emit(text))
+        #layout.addWidget(self.confirm_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         self.setLayout(layout)
 
 
