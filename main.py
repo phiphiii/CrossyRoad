@@ -68,7 +68,7 @@ class MainApp(QWidget):
     def change_res(self, text):
         if text == "Fullscreen":
             self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215)
+            self.setMaximumSize(16777215, 16777215) #2^24-1
             self.showFullScreen()
         else:
             self.showNormal()
@@ -132,8 +132,17 @@ class Game(QWidget):
         self.absolute_y = 0
         self.score = 0
         self.difficulty = 0.0
-        self.spawn_rate = 0.5
+        self.spawn_rate = 0.3
         self.camera_scroll = 0.0
+
+        self.current_seed = random.randint(0, 999999999)
+        random.seed(self.current_seed)
+
+        self.current_tick = 0
+        self.recorded_inputs = []
+        self.is_replay_mode = False
+        self.replay_index = 0
+
         self.god_mode = False
         self.debug_mode = False
         self.river_block = True
@@ -194,7 +203,7 @@ class Game(QWidget):
 
         self.resume_btn.clicked.connect(self.toggle_pause)
         self.save_btn.clicked.connect(self.save_game)
-        self.restart_btn.clicked.connect(self.reset_game)
+        self.restart_btn.clicked.connect(lambda checked: self.reset_game(False))
         self.options_btn.clicked.connect(lambda: self.open_options.emit())
         self.menu_btn.clicked.connect(lambda: self.back_to_main.emit())
 
@@ -226,7 +235,7 @@ class Game(QWidget):
                         font-size: 24px;
                         background: transparent;
                     }
-                    
+
                     QPushButton {
                         background-color: #e74c3c; 
                         color: white; 
@@ -251,11 +260,13 @@ class Game(QWidget):
         self.go_score_label.setObjectName("score")
 
         self.go_load_btn = QPushButton("Load Save", self.game_over_overlay)
+        self.go_replay_btn = QPushButton("Replay Mode", self.game_over_overlay)
         self.go_restart_btn = QPushButton("Restart", self.game_over_overlay)
         self.go_menu_btn = QPushButton("Main Menu", self.game_over_overlay)
 
         self.go_load_btn.clicked.connect(self.load_game)
-        self.go_restart_btn.clicked.connect(self.reset_game)
+        self.go_replay_btn.clicked.connect(lambda checked: self.reset_game(True))
+        self.go_restart_btn.clicked.connect(lambda checked: self.reset_game(False))
         self.go_menu_btn.clicked.connect(lambda: self.back_to_main.emit())
 
         game_over_layout.addStretch()
@@ -263,6 +274,7 @@ class Game(QWidget):
         game_over_layout.addWidget(self.go_score_label, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addSpacing(30)
         game_over_layout.addWidget(self.go_load_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        game_over_layout.addWidget(self.go_replay_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addWidget(self.go_restart_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addWidget(self.go_menu_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addStretch()
@@ -288,74 +300,6 @@ class Game(QWidget):
             self.pause_overlay.hide()
             self.setFocus()
 
-    def shift_lanes_down(self):
-        top_lane_type = "grass"
-        for lane in self.lanes:
-            if lane.y_pos == -1:
-                top_lane_type = lane.lane_type
-            lane.y_pos += 1
-
-        lane_types = ["road", "river", "grass"]
-        if self.river_block and top_lane_type == "river":
-            lane_types.remove("river")
-
-        new_lane_type = random.choice(lane_types)
-
-        lane_objects = []
-        grass_tiles = []
-
-        if new_lane_type == "road":
-            lane_direction = random.choice([True, False])
-            current_sprite = self.car_sprite_right if lane_direction else self.car_sprite_left
-
-            for x_start in [1, 5, 9]:
-                if random.random() <= self.spawn_rate:
-                    car_speed = random.uniform(0.02, 0.06) + (self.difficulty * 1.8) + random.uniform(0.0, 0.04)
-                    obj = Object("car", current_sprite, x_start, -1, car_speed)
-                    obj.goesRight = lane_direction
-                    lane_objects.append(obj)
-
-            if not lane_objects:
-                car_speed = random.uniform(0.02, 0.06) + (self.difficulty * 1.8)
-                obj = Object("car", current_sprite, 5, -1, car_speed)
-                obj.goesRight = lane_direction
-                lane_objects.append(obj)
-
-            self.lanes.append(Lane(new_lane_type, -1, lane_objects))
-
-        elif new_lane_type == "grass":
-            for _ in range(9):
-                grass_tiles.append(random.choice(self.grass_sprites))
-
-            num_trees = random.randint(1, 4)
-            tree_x_positions = random.sample(range(9), num_trees)
-
-            for tx in tree_x_positions:
-                lane_objects.append(Object("tree", self.tree_sprite, tx, -1, 0))
-
-            self.lanes.append(Lane(new_lane_type, -1, lane_objects, grass_tiles))
-
-        elif new_lane_type == "river":
-            lane_speed = random.uniform(0.02, 0.05) + self.difficulty
-            lane_direction = random.choice([True, False])
-            if random.uniform(0, 1.0) > max((0.5 - self.difficulty * 20), 0.1):
-                lane_objects = [
-                    Object("log", self.log_sprite, 1, -1, lane_speed),
-                    Object("log", self.log_sprite, 4, -1, lane_speed),
-                    Object("log", self.log_sprite, 7, -1, lane_speed),
-                ]
-            else:
-                num_pads = random.randint(5, 7)
-                pad_positions = random.sample(range(9), num_pads)
-                for px in pad_positions:
-                    lane_objects.append(Object("lilypad", self.lilypad_sprite, px, -1, 0))
-
-            for obj in lane_objects:
-                obj.goesRight = lane_direction
-
-            self.lanes.append(Lane(new_lane_type, -1, lane_objects))
-
-        self.lanes = [lane for lane in self.lanes if lane.y_pos <= 15]
     def game_over(self):
         self.is_dead = True
         self.game_timer.stop()
@@ -363,16 +307,27 @@ class Game(QWidget):
         self.game_over_overlay.show()
         self.log_event("Player died. Game Over.")
 
-    def reset_game(self):
+    def reset_game(self, replay=False):
         self.player_x = 4
         self.player_y = 14
         self.absolute_y = 0
         self.score = 0
         self.difficulty = 0.0
-        self.spawn_rate = 0.5
+        self.spawn_rate = 0.3
         self.camera_scroll = 0.0
         self.is_dead = False
         self.lanes = []
+
+        self.current_tick = 0
+        self.is_replay_mode = replay
+        self.replay_index = 0
+
+        if not replay:
+            self.current_seed = random.randint(0, 999999999)
+            self.recorded_inputs = []
+
+        random.seed(self.current_seed)
+
         self.generate_first_lanes()
         if self.is_paused:
             self.toggle_pause()
@@ -380,13 +335,13 @@ class Game(QWidget):
         self.game_timer.start(30)
         self.update()
         self.log_event("Game started / reset.")
-
     def save_game(self):
         save_data = {
             "score": self.score,
             "absolute_y": self.absolute_y,
             "player_x": self.player_x,
             "player_y": self.player_y,
+            "seed": self.current_seed,
             "lanes": []
         }
 
@@ -426,17 +381,25 @@ class Game(QWidget):
 
         self.score = save_data["score"]
         self.difficulty = self.score * 0.0001
-        self.spawn_rate = min(0.5 + self.difficulty * 10, 0.95)
+        self.spawn_rate = min(0.3 + self.difficulty * 10, 0.95)
         self.absolute_y = save_data["absolute_y"]
         self.player_x = save_data["player_x"]
         self.player_y = save_data["player_y"]
         self.camera_scroll = 0.0
 
+        self.current_seed = save_data.get("seed", random.randint(0, 999999999))
+        random.seed(self.current_seed)
+
+        self.current_tick = 0
+        self.recorded_inputs = []
+        self.is_replay_mode = False
+        self.replay_index = 0
+
         self.lanes = []
         for lane_data in save_data["lanes"]:
             grass_tiles = []
             if lane_data["lane_type"] == "grass":
-                for _ in range(9):
+                for grass_sprite in range(9):
                     grass_tiles.append(random.choice(self.grass_sprites))
 
             lane = Lane(lane_data["lane_type"], lane_data["y_pos"], None, grass_tiles)
@@ -491,22 +454,24 @@ class Game(QWidget):
 
             if lane_type == "road":
                 lane_direction = random.choice([True, False])
-                if lane_direction:
-                    current_sprite = self.car_sprite_right
-                else:
-                    current_sprite = self.car_sprite_left
+                current_sprite = self.car_sprite_right if lane_direction else self.car_sprite_left
+
+                spawn_positions = []
+                check_x = 0
+                while check_x < 9:
+                    if random.random() <= (self.spawn_rate * 0.8):
+                        spawn_positions.append(check_x)
+                        check_x += random.randint(2, 3)
+                    else:
+                        check_x += 1
+
+                if not spawn_positions:
+                    spawn_positions.append(random.randint(0, 8))
 
                 lane_objects = []
-                for x_start in [1, 5, 9]:
-                    if random.random() <= self.spawn_rate:
-                        car_speed = random.uniform(0.02, 0.06) + (self.difficulty * 1.8) + random.uniform(0.0, 0.04)
-                        obj = Object("car", current_sprite, x_start, i, car_speed)
-                        obj.goesRight = lane_direction
-                        lane_objects.append(obj)
-
-                if not lane_objects:
-                    car_speed = random.uniform(0.02, 0.06) + (self.difficulty * 1.8)
-                    obj = Object("car", current_sprite, 5, i, car_speed)
+                for x_pos in spawn_positions:
+                    car_speed = random.uniform(0.02, 0.10) + (self.difficulty * 1.8)
+                    obj = Object("car", current_sprite, x_pos, i, car_speed)
                     obj.goesRight = lane_direction
                     lane_objects.append(obj)
 
@@ -527,15 +492,29 @@ class Game(QWidget):
                 self.lanes.append(Lane(lane_type, i, tree_objects, grass_tiles))
 
             elif lane_type == "river":
-                lane_speed = random.uniform(0.02, 0.05)
+                lane_speed = random.uniform(0.02, 0.05) + self.difficulty
                 lane_direction = random.choice([True, False])
 
                 if random.uniform(0, 1.0) > 0.5:
-                    lane_objects = [
-                        Object("log", self.log_sprite, 1, i, lane_speed),
-                        Object("log", self.log_sprite, 4, i, lane_speed),
-                        Object("log", self.log_sprite, 7, i, lane_speed),
-                    ]
+                    lane_objects = []
+                    spawn_positions = []
+                    check_x = 0
+                    log_chance = max(0.4, 0.8 - (self.difficulty * 2.0))
+
+                    while check_x < 9:
+                        if random.random() <= log_chance:
+                            spawn_positions.append(check_x)
+                            check_x += random.randint(3, 4)
+                        else:
+                            check_x += 1
+
+                    if len(spawn_positions) < 2:
+                        spawn_positions = [random.randint(0, 2), random.randint(5, 7)]
+
+                    for x_pos in spawn_positions:
+                        obj = Object("log", self.log_sprite, x_pos, i, lane_speed)
+                        obj.goesRight = lane_direction
+                        lane_objects.append(obj)
                 else:
                     lane_objects = []
                     num_pads = random.randint(5, 7)
@@ -549,6 +528,96 @@ class Game(QWidget):
                 self.lanes.append(Lane(lane_type, i, lane_objects))
 
             self.lanes = [lane for lane in self.lanes if lane.y_pos <= 15]
+
+    def shift_lanes_down(self):
+        top_lane_type = "grass"
+        for lane in self.lanes:
+            if lane.y_pos == -1:
+                top_lane_type = lane.lane_type
+            lane.y_pos += 1
+
+        lane_types = ["road", "river", "grass"]
+        if self.river_block and top_lane_type == "river":
+            lane_types.remove("river")
+
+        new_lane_type = random.choice(lane_types)
+
+        lane_objects = []
+        grass_tiles = []
+
+        if new_lane_type == "road":
+            lane_direction = random.choice([True, False])
+            current_sprite = self.car_sprite_right if lane_direction else self.car_sprite_left
+
+            spawn_positions = []
+            check_x = 0
+            while check_x < 9:
+                if random.random() <= (self.spawn_rate * 0.8):
+                    spawn_positions.append(check_x)
+                    check_x += random.randint(2, 3)
+                else:
+                    check_x += 1
+
+            if not spawn_positions:
+                spawn_positions.append(random.randint(0, 8))
+
+            for x_pos in spawn_positions:
+                car_speed = random.uniform(0.02, 0.10) + (self.difficulty * 1.8)
+                obj = Object("car", current_sprite, x_pos, -1, car_speed)
+                obj.goesRight = lane_direction
+                lane_objects.append(obj)
+
+            self.lanes.append(Lane(new_lane_type, -1, lane_objects))
+
+        elif new_lane_type == "grass":
+            for _ in range(9):
+                grass_tiles.append(random.choice(self.grass_sprites))
+
+            num_trees = random.randint(1, 4)
+            tree_x_positions = random.sample(range(9), num_trees)
+
+            for tx in tree_x_positions:
+                lane_objects.append(Object("tree", self.tree_sprite, tx, -1, 0))
+
+            self.lanes.append(Lane(new_lane_type, -1, lane_objects, grass_tiles))
+
+        elif new_lane_type == "river":
+            lane_speed = random.uniform(0.02, 0.05) + self.difficulty
+            lane_direction = random.choice([True, False])
+
+            if random.uniform(0, 1.0) > max((0.5 - self.difficulty * 20), 0.1):
+                lane_objects = []
+                spawn_positions = []
+                check_x = 0
+                log_chance = max(0.4, 0.8 - (self.difficulty * 2.0))
+
+                while check_x < 9:
+                    if random.random() <= log_chance:
+                        spawn_positions.append(check_x)
+                        check_x += random.randint(3, 4)
+                    else:
+                        check_x += 1
+
+                if len(spawn_positions) < 2:
+                    spawn_positions = [random.randint(0, 2), random.randint(5, 7)]
+
+                for x_pos in spawn_positions:
+                    obj = Object("log", self.log_sprite, x_pos, -1, lane_speed)
+                    obj.goesRight = lane_direction
+                    lane_objects.append(obj)
+            else:
+                lane_objects = []
+                num_pads = random.randint(5, 7)
+                pad_positions = random.sample(range(9), num_pads)
+                for px in pad_positions:
+                    lane_objects.append(Object("lilypad", self.lilypad_sprite, px, -1, 0))
+
+            for obj in lane_objects:
+                obj.goesRight = lane_direction
+
+            self.lanes.append(Lane(new_lane_type, -1, lane_objects))
+
+        self.lanes = [lane for lane in self.lanes if lane.y_pos <= 15]
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0))
@@ -634,6 +703,11 @@ class Game(QWidget):
             painter.drawText(x_offset + 20, y_offset + 70, f"Difficulty: {self.difficulty:.4f}")
             painter.drawText(x_offset + 20, y_offset + 100, f"Spawn Rate: {self.spawn_rate:.2f}")
             painter.drawText(x_offset + 20, y_offset + 130, f"Camera Speed: {self.difficulty*1.5:.4f}")
+            painter.drawText(x_offset + 20, y_offset + 160, f"Seed: {self.current_seed}")
+
+        if self.is_replay_mode:
+            painter.setPen(QColor(255, 0, 0))
+            painter.drawText(x_offset + game_width - 160, y_offset + 40, "Replay Mode")
     def is_tree_at(self, target_x, target_y):
         for lane in self.lanes:
             if lane.y_pos == target_y:
@@ -642,13 +716,24 @@ class Game(QWidget):
                         return True
         return False
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event, simulated=False):
         if event.key() == Qt.Key.Key_Escape:
             self.toggle_pause()
             return
 
         if self.is_paused:
             return
+
+        if event.key() == Qt.Key.Key_R:
+            self.reset_game(False)
+            return
+
+        if self.is_replay_mode and not simulated:
+            return
+
+        valid_keys = [Qt.Key.Key_Up, Qt.Key.Key_W, Qt.Key.Key_Down, Qt.Key.Key_S, Qt.Key.Key_Left, Qt.Key.Key_A, Qt.Key.Key_Right, Qt.Key.Key_D]
+        if not self.is_replay_mode and not self.is_dead and event.key() in valid_keys:
+            self.recorded_inputs.append((self.current_tick, event.key()))
 
         current_grid_x = round(self.player_x)
 
@@ -661,7 +746,7 @@ class Game(QWidget):
             if self.absolute_y > self.score:
                 self.score = self.absolute_y
                 self.difficulty = self.score * 0.0001
-                self.spawn_rate = min(0.5 + self.difficulty * 10, 0.95)
+                self.spawn_rate = min(0.3 + self.difficulty * 10, 0.95)
                 self.log_event(f"New max score. Difficulty: {self.difficulty:.4f}, Spawn Rate: {self.spawn_rate:.2f}")
 
             self.log_event(f"Moved UP. Grid Y: {self.player_y - 1}")
@@ -691,9 +776,6 @@ class Game(QWidget):
             self.player_x = current_grid_x + 1
             self.log_event(f"Moved RIGHT. Grid X: {self.player_x}")
 
-        elif event.key() == Qt.Key.Key_R:
-            self.reset_game()
-
         self.update()
 
     def get_lane(self, y):
@@ -703,7 +785,7 @@ class Game(QWidget):
         return None
 
     def ai_step(self):
-        if not self.ai_mode or self.is_dead or self.is_paused:
+        if not self.ai_mode or self.is_dead or self.is_paused or self.is_replay_mode:
             return
 
         if not hasattr(self, 'stuck_ticks'):
@@ -931,13 +1013,26 @@ class Game(QWidget):
                 QApplication.postEvent(self, event)
 
     def update_game_state(self):
+        if self.is_replay_mode and not self.is_dead and not self.is_paused:
+            while self.replay_index < len(self.recorded_inputs):
+                tick, key = self.recorded_inputs[self.replay_index]
+                if tick == self.current_tick:
+                    event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+                    self.keyPressEvent(event, simulated=True)
+                    self.replay_index += 1
+                else:
+                    break
+
+        if not self.is_dead and not self.is_paused:
+            self.current_tick += 1
+
         player_on_log = False
         current_lane_type = "grass"
 
         if not self.is_dead and not self.is_paused:
             self.camera_scroll += 0.01 + (self.difficulty * 1.5)
             if self.camera_scroll >= 1.0:
-                self.camera_scroll = 0.0
+                self.camera_scroll -= 1.0
                 self.player_y += 1
                 self.shift_lanes_down()
 
@@ -955,14 +1050,14 @@ class Game(QWidget):
                         dist = front_car.x_pos - lane.objects[j].x_pos
                         if dist < 0:
                             dist += 16
-                        if dist < 2.5 and lane.objects[j].speed > front_car.speed:
+                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
                             lane.objects[j].speed = front_car.speed
                     else:
                         front_car = lane.objects[(j - 1) % num_cars]
                         dist = lane.objects[j].x_pos - front_car.x_pos
                         if dist < 0:
                             dist += 16
-                        if dist < 2.5 and lane.objects[j].speed > front_car.speed:
+                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
                             lane.objects[j].speed = front_car.speed
 
             for obj in lane.objects:
@@ -1003,7 +1098,6 @@ class Game(QWidget):
                 self.game_over()
 
         self.update()
-
 class Options(QWidget):
     back_to_menu = pyqtSignal()
     change_resolution = pyqtSignal(str)
