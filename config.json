@@ -1,0 +1,11 @@
+{
+    "base_difficulty": 0.0,
+    "base_spawn_rate": 0.3,
+    "ai_tickrate": 30,
+    "game_timer_ms": 30,
+    "lane_weights": ["road", "river", "grass"],
+    "max_trees": 4,
+    "min_car_speed": 0.02,
+    "max_car_speed": 0.1,
+    "river_block": true
+}
