@@ -4,8 +4,9 @@ import os
 import json
 
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer, QSize, QRect, QEvent
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton, QStackedWidget, QComboBox
+from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QVBoxLayout, QPushButton, QStackedWidget, QComboBox, QLineEdit, QGraphicsBlurEffect
 from PyQt6.QtGui import QPainter, QColor, QIcon, QPixmap, QTransform, QFontDatabase, QFont, QKeyEvent
+from PyQt6.QtNetwork import QTcpSocket
 
 
 class MainApp(QWidget):
@@ -15,15 +16,32 @@ class MainApp(QWidget):
         self.setWindowTitle("phiphi's Crossy Road")
         self.setFixedSize(360, 640)
 
+        self.bg_label = QLabel(self)
+        self.bg_pixmap = QPixmap("sprites/gui/background.png")
+        self.bg_label.setPixmap(self.bg_pixmap)
+        self.bg_label.setScaledContents(True)
+
+        blur_effect = QGraphicsBlurEffect()
+        blur_effect.setBlurRadius(5)
+        self.bg_label.setGraphicsEffect(blur_effect)
+
         main_layout = QVBoxLayout()
         self.stacked_widget = QStackedWidget()
+        self.stacked_widget.setStyleSheet("background: transparent;")
 
         self.menu = Menu()
+        self.singleplayer_menu = SingleplayerMenu()
+        self.multiplayer_menu = MultiplayerMenu()
         self.game = Game()
         self.options_screen = Options()
+        self.lobby_menu = LobbyMenu()
+
         self.stacked_widget.addWidget(self.menu)
+        self.stacked_widget.addWidget(self.singleplayer_menu)
+        self.stacked_widget.addWidget(self.multiplayer_menu)
         self.stacked_widget.addWidget(self.game)
         self.stacked_widget.addWidget(self.options_screen)
+        self.stacked_widget.addWidget(self.lobby_menu)
 
         self.setLayout(main_layout)
         main_layout.addWidget(self.stacked_widget)
@@ -31,44 +49,82 @@ class MainApp(QWidget):
 
         self.previous_index = 0
 
-        self.menu.new_game.connect(self.start_new_game)
-        self.menu.load_game.connect(self.load_saved_game)
+        self.menu.singleplayer.connect(lambda: self.stacked_widget.setCurrentIndex(1))
+        self.menu.multiplayer.connect(lambda: self.stacked_widget.setCurrentIndex(2))
         self.menu.options.connect(self.open_options)
+
+        self.singleplayer_menu.back.connect(self.back_to_main)
+        self.singleplayer_menu.new_game.connect(self.start_new_game)
+        self.singleplayer_menu.load_game.connect(self.load_saved_game)
+
+        self.multiplayer_menu.back.connect(self.back_to_main)
+        self.multiplayer_menu.join_game.connect(self.start_multiplayer_game)
+
+        self.lobby_menu.back.connect(self.back_to_main)
+        self.lobby_menu.ready.connect(self.game.send_ready)
+        self.lobby_menu.unready.connect(self.game.send_unready)
+
         self.options_screen.back_to_menu.connect(self.back_from_options)
         self.options_screen.change_resolution.connect(self.change_res)
         self.options_screen.god_mode_changed.connect(self.update_god_mode)
         self.options_screen.debug_mode_changed.connect(self.update_debug_mode)
-        #self.options_screen.river_block_changed.connect(self.update_river_block)
         self.options_screen.ai_mode_changed.connect(self.update_ai_mode)
 
         self.game.open_options.connect(self.open_options)
         self.game.back_to_main.connect(self.back_to_main)
+        self.game.lobby_updated.connect(self.lobby_menu.update_lobby)
+        self.game.game_started.connect(lambda: self.stacked_widget.setCurrentIndex(3))
+        self.game.countdown_started.connect(lambda: self.stacked_widget.setCurrentIndex(3))
+        self.game.countdown_started.connect(self.lobby_menu.lock_buttons)
+        self.game.rematch_requested.connect(self.handle_rematch)
 
     def load_saved_game(self):
         if self.game.load_game():
-            self.stacked_widget.setCurrentIndex(1)
+            self.stacked_widget.setCurrentIndex(3)
             self.game.setFocus()
+
     def start_new_game(self):
+        self.game.is_multiplayer = False
         self.game.reset_game()
-        self.stacked_widget.setCurrentIndex(1)
+        self.stacked_widget.setCurrentIndex(3)
         self.game.setFocus()
+
+    def start_multiplayer_game(self, nickname):
+        self.game.is_multiplayer = True
+        self.game.connect_to_server(nickname)
+        self.game.reset_game()
+        self.stacked_widget.setCurrentIndex(5)
+        self.lobby_menu.is_ready = False
+        self.lobby_menu.unlock_buttons()
+        self.lobby_menu.ready_btn.setText("Ready (0/0)")
+
+    def handle_rematch(self):
+        self.game.is_waiting_for_players = True
+        self.lobby_menu.is_ready = False
+        self.lobby_menu.unlock_buttons()
+        self.stacked_widget.setCurrentIndex(5)
 
     def open_options(self):
         self.previous_index = self.stacked_widget.currentIndex()
-        self.stacked_widget.setCurrentIndex(2)
+        self.stacked_widget.setCurrentIndex(4)
 
     def back_from_options(self):
         self.stacked_widget.setCurrentIndex(self.previous_index)
-        if self.previous_index == 1:
+        if self.previous_index == 3:
             self.game.setFocus()
 
     def back_to_main(self):
+        if self.game.tcp_client.state() == QTcpSocket.SocketState.ConnectedState:
+            self.game.tcp_client.abort()
+        self.lobby_menu.unlock_buttons()
+        self.lobby_menu.is_ready = False
+        self.lobby_menu.ready_btn.setText("Ready (0/0)")
         self.stacked_widget.setCurrentIndex(0)
 
     def change_res(self, text):
         if text == "Fullscreen":
             self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215) #2^24-1
+            self.setMaximumSize(16777215, 16777215)
             self.showFullScreen()
         else:
             self.showNormal()
@@ -77,16 +133,15 @@ class MainApp(QWidget):
             height = int(resolution[1])
             self.setFixedSize(width, height)
 
+    def resizeEvent(self, event):
+        self.bg_label.resize(self.width(), self.height())
+        super().resizeEvent(event)
+
     def update_god_mode(self, state):
         self.game.god_mode = state
 
     def update_debug_mode(self, state):
         self.game.debug_mode = state
-
-    '''
-    def update_river_block(self, state):
-        self.game.river_block = state
-    '''
 
     def update_ai_mode(self, state):
         self.game.ai_mode = state
@@ -97,6 +152,7 @@ class Lane:
         self.y_pos = y_pos
         self.objects = objects if objects is not None else []
         self.tiles = tiles if tiles is not None else []
+
 
 class Object:
     def __init__(self, obj_type, sprite, x_pos, y_pos, speed):
@@ -151,9 +207,14 @@ class ObjectFactory:
             return self.x_pos + 0.1, self.x_pos + 0.9
         return self.x_pos, self.x_pos + 1.0
 
+
 class Game(QWidget):
     open_options = pyqtSignal()
     back_to_main = pyqtSignal()
+    lobby_updated = pyqtSignal(str, str)
+    game_started = pyqtSignal()
+    countdown_started = pyqtSignal()
+    rematch_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -161,6 +222,12 @@ class Game(QWidget):
         self.tile_size = 9
         self.player_x = 4
         self.player_y = 14
+
+        self.last_sent_x = None
+        self.last_sent_y = None
+        self.last_sent_score = None
+        self.multiplayer_scores = {}
+        self.is_waiting_for_players = False
 
         self.load_config()
 
@@ -180,9 +247,19 @@ class Game(QWidget):
 
         self.god_mode = False
         self.debug_mode = False
-        #self.river_block = True
         self.ai_mode = False
         self.is_paused = False
+        self.is_dead = False
+        self.is_multiplayer = False
+
+        self.tcp_client = QTcpSocket(self)
+        self.tcp_client.connected.connect(self.on_connected)
+        self.tcp_client.readyRead.connect(self.read_network_data)
+        self.player_nickname = ""
+
+        self.network_timer = QTimer(self)
+        self.network_timer.timeout.connect(self.send_player_state)
+        self.network_timer.start(100)
 
         self.ai_timer = QTimer(self)
         self.ai_timer.timeout.connect(self.ai_step)
@@ -207,14 +284,11 @@ class Game(QWidget):
         self.car_sprite_right = self.car_sprite_left.transformed(self.transform)
 
         self.factory = ObjectFactory(self)
-
         self.generate_first_lanes()
 
         self.pause_overlay = QWidget(self)
         self.pause_overlay.setStyleSheet("""
-            QWidget {
-                background-color: rgba(0, 0, 0, 180);
-            }
+            QWidget { background-color: rgba(0, 0, 0, 180); }
             QPushButton {
                 background-color: #e74c3c; 
                 color: white; 
@@ -224,11 +298,8 @@ class Game(QWidget):
                 min-width: 250px;
                 min-height: 55px;
             }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
+            QPushButton:hover { background-color: #c0392b; }
         """)
-
         pause_layout = QVBoxLayout(self.pause_overlay)
         pause_layout.setSpacing(20)
 
@@ -251,48 +322,20 @@ class Game(QWidget):
         pause_layout.addWidget(self.options_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         pause_layout.addWidget(self.menu_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         pause_layout.addStretch()
-
         self.pause_overlay.hide()
-
-        self.is_dead = False
 
         self.game_over_overlay = QWidget(self)
         self.game_over_overlay.setStyleSheet("""
-                    QWidget {
-                        background-color: rgba(0, 0, 0, 200);
-                    }
-                    QLabel#title {
-                        color: red;
-                        font-size: 32px;
-                        font-weight: bold;
-                        background: transparent;
-                    }
-                    QLabel#score {
-                        color: white;
-                        font-size: 24px;
-                        background: transparent;
-                    }
-
-                    QPushButton {
-                        background-color: #e74c3c; 
-                        color: white; 
-                        border-radius: 12px;
-                        font-size: 16px;
-                        min-width: 250px;
-                        min-height: 55px;
-                        margin-top: 10px;
-                    }
-                    QPushButton:hover {
-                        background-color: #c0392b;
-                    }
-                """)
-        self.game_over_overlay.hide()
-
+            QWidget { background-color: rgba(0, 0, 0, 200); }
+            QLabel#title { color: red; font-size: 32px; font-weight: bold; background: transparent; }
+            QLabel#score { color: white; font-size: 24px; background: transparent; }
+            QPushButton { background-color: #e74c3c; color: white; border-radius: 12px; font-size: 16px; min-width: 250px; min-height: 55px; margin-top: 10px; }
+            QPushButton:hover { background-color: #c0392b; }
+        """)
         game_over_layout = QVBoxLayout(self.game_over_overlay)
 
         self.go_label = QLabel("GAME OVER", self.game_over_overlay)
         self.go_label.setObjectName("title")
-
         self.go_score_label = QLabel("Score: 0", self.game_over_overlay)
         self.go_score_label.setObjectName("score")
 
@@ -303,7 +346,7 @@ class Game(QWidget):
 
         self.go_load_btn.clicked.connect(self.load_game)
         self.go_replay_btn.clicked.connect(lambda checked: self.reset_game(True))
-        self.go_restart_btn.clicked.connect(lambda checked: self.reset_game(False))
+        self.go_restart_btn.clicked.connect(self.handle_restart_clicked)
         self.go_menu_btn.clicked.connect(lambda: self.back_to_main.emit())
 
         game_over_layout.addStretch()
@@ -315,22 +358,165 @@ class Game(QWidget):
         game_over_layout.addWidget(self.go_restart_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addWidget(self.go_menu_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         game_over_layout.addStretch()
-
         self.game_over_overlay.hide()
+
+        self.countdown_overlay = QWidget(self)
+        self.countdown_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
+        cd_layout = QVBoxLayout(self.countdown_overlay)
+        self.countdown_label = QLabel("", self.countdown_overlay)
+        self.countdown_label.setStyleSheet("color: white; font-size: 80px; font-weight: bold; background: transparent;")
+        cd_layout.addWidget(self.countdown_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.countdown_overlay.hide()
 
         self.game_timer = QTimer(self)
         self.game_timer.timeout.connect(self.update_game_state)
         self.game_timer.start(self.config["game_timer_ms"])
 
+    def handle_restart_clicked(self):
+        if getattr(self, 'is_multiplayer', False):
+            if self.tcp_client.state() == QTcpSocket.SocketState.ConnectedState:
+                self.tcp_client.write("REMATCH\n".encode('utf-8'))
+                self.go_restart_btn.setText("Waiting for others...")
+                self.go_restart_btn.setEnabled(False)
+        else:
+            self.reset_game(False)
+
+    def send_player_state(self):
+        if self.tcp_client.state() == QTcpSocket.SocketState.ConnectedState and not getattr(self, 'is_waiting_for_players', False):
+            current_x = round(self.player_x, 1)
+            current_y = round(self.player_y, 1)
+            current_abs_y = self.absolute_y
+
+            if not hasattr(self, 'last_sent_abs_y'):
+                self.last_sent_abs_y = None
+
+            if current_x != self.last_sent_x or current_y != self.last_sent_y or current_abs_y != self.last_sent_abs_y or self.score != self.last_sent_score:
+                state_payload = f"STATE_X:{current_x}|STATE_Y:{current_y}|ABS_Y:{current_abs_y}|SCORE:{self.score}\n"
+                self.tcp_client.write(state_payload.encode('utf-8'))
+                self.last_sent_x = current_x
+                self.last_sent_y = current_y
+                self.last_sent_abs_y = current_abs_y
+                self.last_sent_score = self.score
+
+    def log_event(self, message):
+        print(f"[SCORE: {self.score}] {message}")
+
+    def read_network_data(self):
+        if not hasattr(self, 'multiplayer_positions'):
+            self.multiplayer_positions = {}
+
+        while self.tcp_client.canReadLine():
+            line = self.tcp_client.readLine().data().decode('utf-8').strip()
+            if not line:
+                continue
+
+            if line.startswith("LOBBY:"):
+                parts = line[6:].split('|')
+                if len(parts) == 2:
+                    for p in parts[0].split(','):
+                        if p and p != self.player_nickname:
+                            if p not in self.multiplayer_scores:
+                                self.multiplayer_scores[p] = 0
+                            if p not in self.multiplayer_positions:
+                                self.multiplayer_positions[p] = {'x': 4, 'abs_y': 0}
+                    self.lobby_updated.emit(parts[0], parts[1].split(':')[1])
+
+                    if not self.is_waiting_for_players and getattr(self, 'is_multiplayer', False):
+                        self.is_waiting_for_players = True
+                        self.is_counting_down = False
+                        self.game_over_overlay.hide()
+                        self.countdown_overlay.hide()
+                        self.reset_game(False)
+                        self.rematch_requested.emit()
+
+            elif line.startswith("NAME_ACCEPTED:"):
+                self.player_nickname = line.split(':', 1)[1]
+
+            elif line.startswith("REMATCH_UPDATE:"):
+                status = line.split(':')[1]
+                self.go_restart_btn.setText(f"Waiting ({status})")
+
+            elif line.startswith("COUNTDOWN:"):
+                self.countdown_started.emit()
+                if getattr(self, 'is_dead', False) or self.game_over_overlay.isVisible():
+                    self.game_over_overlay.hide()
+                    self.reset_game(False)
+                self.is_counting_down = True
+                num = line.split(':')[1]
+                self.countdown_overlay.raise_()
+                self.show_countdown(num)
+
+            elif line == "START":
+                self.is_counting_down = False
+                self.is_waiting_for_players = False
+                self.show_countdown("START!")
+                self.game_started.emit()
+                QTimer.singleShot(1000, self.countdown_overlay.hide)
+
+            elif line.startswith("["):
+                try:
+                    name_part, data_part = line.split(']: ', 1)
+                    name = name_part[1:]
+                    if name == self.player_nickname:
+                        continue
+
+                    if name not in self.multiplayer_positions:
+                        self.multiplayer_positions[name] = {'x': 4, 'abs_y': 0}
+
+                    for item in data_part.split('|'):
+                        if item.startswith("SCORE:"):
+                            self.multiplayer_scores[name] = int(item.split(':')[1])
+                        elif item.startswith("STATE_X:"):
+                            self.multiplayer_positions[name]['x'] = float(item.split(':')[1])
+                        elif item.startswith("ABS_Y:"):
+                            self.multiplayer_positions[name]['abs_y'] = int(item.split(':')[1])
+                except:
+                    pass
+
+    def send_ready(self):
+        if self.tcp_client.state() == QTcpSocket.SocketState.ConnectedState:
+            self.tcp_client.write("READY\n".encode('utf-8'))
+
+    def send_unready(self):
+        if self.tcp_client.state() == QTcpSocket.SocketState.ConnectedState:
+            self.tcp_client.write("UNREADY\n".encode('utf-8'))
+
+    def show_countdown(self, text):
+        self.countdown_label.setText(text)
+        self.countdown_overlay.show()
+
+    def start_multiplayer_match(self):
+        self.countdown_overlay.hide()
+        self.is_waiting_for_players = False
+        self.game_started.emit()
+
+    def connect_to_server(self, nickname):
+        self.player_nickname = nickname
+        self.is_waiting_for_players = True
+        self.multiplayer_scores = {}
+        if self.tcp_client.state() != QTcpSocket.SocketState.ConnectedState:
+            self.tcp_client.connectToHost('127.0.0.1', 5555)
+
+    def on_connected(self):
+        if self.player_nickname:
+            self.tcp_client.write((self.player_nickname + '\n').encode('utf-8'))
+
     def resizeEvent(self, event):
         self.pause_overlay.resize(self.width(), self.height())
         self.game_over_overlay.resize(self.width(), self.height())
+        self.countdown_overlay.resize(self.width(), self.height())
         super().resizeEvent(event)
 
     def toggle_pause(self):
         self.is_paused = not self.is_paused
         if self.is_paused:
             self.game_timer.stop()
+            if getattr(self, 'is_multiplayer', False):
+                self.save_btn.hide()
+                self.restart_btn.hide()
+            else:
+                self.save_btn.show()
+                self.restart_btn.show()
             self.pause_overlay.show()
         else:
             self.game_timer.start(30)
@@ -341,6 +527,18 @@ class Game(QWidget):
         self.is_dead = True
         self.game_timer.stop()
         self.go_score_label.setText(f"Score: {self.score}")
+
+        if getattr(self, 'is_multiplayer', False):
+            self.go_load_btn.hide()
+            self.go_replay_btn.hide()
+            self.go_restart_btn.setText("Rematch")
+            self.go_restart_btn.setEnabled(True)
+        else:
+            self.go_load_btn.show()
+            self.go_replay_btn.show()
+            self.go_restart_btn.setText("Restart")
+            self.go_restart_btn.setEnabled(True)
+
         self.game_over_overlay.show()
         self.log_event("Player died. Game Over.")
 
@@ -356,6 +554,18 @@ class Game(QWidget):
         self.is_dead = False
         self.lanes = []
 
+        self.last_sent_x = None
+        self.last_sent_y = None
+        self.last_sent_abs_y = None
+        self.last_sent_score = None
+
+        if hasattr(self, 'multiplayer_scores'):
+            for k in self.multiplayer_scores:
+                self.multiplayer_scores[k] = 0
+
+        if hasattr(self, 'multiplayer_positions'):
+            self.multiplayer_positions.clear()
+
         self.current_tick = 0
         self.is_replay_mode = replay
         self.replay_index = 0
@@ -365,7 +575,6 @@ class Game(QWidget):
             self.recorded_inputs = []
 
         random.seed(self.current_seed)
-
         self.generate_first_lanes()
         if self.is_paused:
             self.toggle_pause()
@@ -373,6 +582,7 @@ class Game(QWidget):
         self.game_timer.start(self.config["game_timer_ms"])
         self.update()
         self.log_event("Game started / reset.")
+
     def save_game(self):
         save_data = {
             "score": self.score,
@@ -425,6 +635,10 @@ class Game(QWidget):
         self.player_y = save_data["player_y"]
         self.camera_scroll = 0.0
 
+        self.last_sent_x = None
+        self.last_sent_y = None
+        self.last_sent_score = None
+
         self.current_seed = save_data.get("seed", random.randint(0, 999999999))
         random.seed(self.current_seed)
 
@@ -463,9 +677,6 @@ class Game(QWidget):
         self.log_event("Game loaded from savegame.json")
         return True
 
-    def log_event(self, message):
-        print(f"[SCORE: {self.score}] {message}")
-
     def generate_first_lanes(self):
         for y in [15, 14]:
             grass_tiles = []
@@ -499,7 +710,8 @@ class Game(QWidget):
 
                 lane_objects = []
                 for x_pos in spawn_positions:
-                    car_speed = random.uniform(self.config["min_car_speed"], self.config["max_car_speed"]) + (self.difficulty * 1.8)
+                    car_speed = random.uniform(self.config["min_car_speed"], self.config["max_car_speed"]) + (
+                                self.difficulty * 1.8)
                     obj = self.factory.create("car", x_pos, i, car_speed, lane_direction)
                     lane_objects.append(obj)
 
@@ -587,7 +799,8 @@ class Game(QWidget):
                 spawn_positions.append(random.randint(0, 8))
 
             for x_pos in spawn_positions:
-                car_speed = random.uniform(self.config["min_car_speed"], self.config["max_car_speed"]) + (self.difficulty * 1.8)
+                car_speed = random.uniform(self.config["min_car_speed"], self.config["max_car_speed"]) + (
+                            self.difficulty * 1.8)
                 obj = self.factory.create("car", x_pos, -1, car_speed, lane_direction)
                 lane_objects.append(obj)
 
@@ -641,13 +854,13 @@ class Game(QWidget):
             self.lanes.append(Lane(new_lane_type, -1, lane_objects))
 
         self.lanes = [lane for lane in self.lanes if lane.y_pos <= 15]
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(0, 0, 0))
 
         window_width = self.width()
         window_height = self.height()
-
         game_ratio = 360 / 640
         window_ratio = window_width / window_height
 
@@ -669,7 +882,6 @@ class Game(QWidget):
         for lane in self.lanes:
             lane_y = y_offset + int((lane.y_pos + self.camera_scroll) * cell_size)
             lane_h = int(cell_size) + 1
-
             if lane.lane_type == "grass":
                 for tile_index in range(9):
                     tile_x = x_offset + int(tile_index * cell_size)
@@ -686,51 +898,66 @@ class Game(QWidget):
             for obj in lane.objects:
                 obj_x = x_offset + int(obj.x_pos * cell_size)
                 painter.drawPixmap(obj_x, lane_y, int(cell_size) + 1, lane_h, obj.sprite)
-
                 if self.debug_mode:
                     obj_left, obj_right = obj.get_hitbox()
                     hitbox_x = x_offset + int(obj_left * cell_size)
                     hitbox_w = int((obj_right - obj_left) * cell_size)
-
                     painter.setPen(QColor(255, 0, 0))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(hitbox_x, lane_y, hitbox_w, int(cell_size))
 
-                    painter.setPen(QColor(0, 255, 0))
-                    debug_font = QFont("Arial", 8)
-                    painter.setFont(debug_font)
-                    speed_str = f"{obj.speed:.2f}"
-                    painter.drawText(hitbox_x + 2, lane_y + 12, obj.obj_type)
-                    painter.drawText(hitbox_x + 2, lane_y + 24, speed_str)
+        if getattr(self, 'is_multiplayer', False):
+            if not hasattr(self, 'multiplayer_positions'):
+                self.multiplayer_positions = {}
+            for name, pos in self.multiplayer_positions.items():
+                if name == self.player_nickname: continue
+                if 'x' in pos and 'abs_y' in pos:
+                    other_x = pos['x']
+                    other_abs_y = pos['abs_y']
+
+                    diff_y = other_abs_y - self.absolute_y
+                    screen_y = self.player_y - diff_y
+
+                    if -2 <= screen_y <= 16:
+                        pixel_x = x_offset + int(other_x * cell_size)
+                        pixel_y = y_offset + int((screen_y + self.camera_scroll) * cell_size)
+
+                        painter.setOpacity(0.3)
+                        painter.drawPixmap(pixel_x, pixel_y, int(cell_size), int(cell_size), self.player_sprite)
+                        painter.setOpacity(1.0)
+
+                        painter.setPen(QColor(255, 255, 255))
+                        name_font = QFont(self.font().family(), max(6, int(cell_size / 8)))
+                        painter.setFont(name_font)
+                        fm = painter.fontMetrics()
+                        text_width = fm.horizontalAdvance(name)
+                        text_x = pixel_x + int(cell_size / 2) - int(text_width / 2)
+                        text_y = pixel_y - 5
+                        painter.drawText(text_x, text_y, name)
 
         pixel_x = x_offset + int(self.player_x * cell_size)
         pixel_y = y_offset + int((self.player_y + self.camera_scroll) * cell_size)
         painter.drawPixmap(pixel_x, pixel_y, int(cell_size), int(cell_size), self.player_sprite)
 
-        if self.debug_mode:
-            player_left = self.player_x + 0.25
-            player_right = self.player_x + 0.75
-            p_hitbox_x = x_offset + int(player_left * cell_size)
-            p_hitbox_w = int((player_right - player_left) * cell_size)
-
-            painter.setPen(QColor(0, 0, 255))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(p_hitbox_x, pixel_y, p_hitbox_w, int(cell_size))
-
         painter.setClipping(False)
-        painter.setPen(QColor(255, 255, 255))
         painter.setFont(QFont(self.font().family(), self.font().pointSize()))
-        painter.drawText(x_offset + 20, y_offset + 40, f"Score: {self.score}")
+        y_text_pos = y_offset + 40
 
-        if self.debug_mode:
-            painter.drawText(x_offset + 20, y_offset + 70, f"Difficulty: {self.difficulty:.4f}")
-            painter.drawText(x_offset + 20, y_offset + 100, f"Spawn Rate: {self.spawn_rate:.2f}")
-            painter.drawText(x_offset + 20, y_offset + 130, f"Camera Speed: {self.difficulty*1.5:.4f}")
-            painter.drawText(x_offset + 20, y_offset + 160, f"Seed: {self.current_seed}")
-
-        if self.is_replay_mode:
+        if getattr(self, 'is_multiplayer', False):
             painter.setPen(QColor(255, 0, 0))
-            painter.drawText(x_offset + game_width - 160, y_offset + 40, "Replay Mode")
+            painter.drawText(x_offset + 20, y_text_pos, f"{self.player_nickname}: {self.score}")
+
+            painter.setPen(QColor(255, 255, 255))
+            if self.tcp_client.state() == QTcpSocket.SocketState.ConnectedState:
+                for name, score in self.multiplayer_scores.items():
+                    if name == self.player_nickname:
+                        continue
+                    y_text_pos += 30
+                    painter.drawText(x_offset + 20, y_text_pos, f"{name}: {score}")
+        else:
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(x_offset + 20, y_text_pos, f"Score: {self.score}")
+
     def is_tree_at(self, target_x, target_y):
         for lane in self.lanes:
             if lane.y_pos == target_y:
@@ -740,34 +967,37 @@ class Game(QWidget):
         return False
 
     def keyPressEvent(self, event, simulated=False):
+        if getattr(self, 'is_waiting_for_players', False) or getattr(self, 'is_counting_down', False):
+            return
+
         if event.key() == Qt.Key.Key_Escape:
+            if getattr(self, 'is_dead', False):
+                return
             self.toggle_pause()
             return
 
-        if self.is_paused:
-            return
+        if self.is_paused: return
 
         if event.key() == Qt.Key.Key_R:
-            self.reset_game(False)
+            if not getattr(self, 'is_multiplayer', False):
+                self.reset_game(False)
             return
 
         if event.key() == Qt.Key.Key_Q:
             self.load_config()
             return
 
-        if self.is_replay_mode and not simulated:
-            return
+        if self.is_replay_mode and not simulated: return
 
-        valid_keys = [Qt.Key.Key_Up, Qt.Key.Key_W, Qt.Key.Key_Down, Qt.Key.Key_S, Qt.Key.Key_Left, Qt.Key.Key_A, Qt.Key.Key_Right, Qt.Key.Key_D]
+        valid_keys = [Qt.Key.Key_Up, Qt.Key.Key_W, Qt.Key.Key_Down, Qt.Key.Key_S, Qt.Key.Key_Left, Qt.Key.Key_A,
+                      Qt.Key.Key_Right, Qt.Key.Key_D]
         if not self.is_replay_mode and not self.is_dead and event.key() in valid_keys:
             self.recorded_inputs.append((self.current_tick, event.key()))
 
         current_grid_x = round(self.player_x)
 
         if (event.key() == Qt.Key.Key_Up or event.key() == Qt.Key.Key_W) and not self.is_dead:
-            if self.is_tree_at(current_grid_x, self.player_y - 1):
-                return
-
+            if self.is_tree_at(current_grid_x, self.player_y - 1): return
             self.player_x = current_grid_x
             self.absolute_y += 1
             if self.absolute_y > self.score:
@@ -784,24 +1014,106 @@ class Game(QWidget):
                 self.shift_lanes_down()
 
         elif (event.key() == Qt.Key.Key_Down or event.key() == Qt.Key.Key_S) and not self.is_dead:
-            if self.is_tree_at(current_grid_x, self.player_y + 1):
-                return
+            if self.is_tree_at(current_grid_x, self.player_y + 1): return
             self.player_x = current_grid_x
             self.player_y += 1
             self.absolute_y -= 1
             self.log_event(f"Moved DOWN. Grid Y: {self.player_y}")
 
         elif (event.key() == Qt.Key.Key_Left or event.key() == Qt.Key.Key_A) and not self.is_dead:
-            if self.is_tree_at(current_grid_x - 1, self.player_y):
-                return
+            if self.is_tree_at(current_grid_x - 1, self.player_y): return
             self.player_x = current_grid_x - 1
             self.log_event(f"Moved LEFT. Grid X: {self.player_x}")
 
         elif (event.key() == Qt.Key.Key_Right or event.key() == Qt.Key.Key_D) and not self.is_dead:
-            if self.is_tree_at(current_grid_x + 1, self.player_y):
-                return
+            if self.is_tree_at(current_grid_x + 1, self.player_y): return
             self.player_x = current_grid_x + 1
             self.log_event(f"Moved RIGHT. Grid X: {self.player_x}")
+
+        self.update()
+    def update_game_state(self):
+        if getattr(self, 'is_waiting_for_players', False) or getattr(self, 'is_counting_down', False):
+            self.update()
+            return
+
+        if self.is_replay_mode and not self.is_dead and not self.is_paused:
+            while self.replay_index < len(self.recorded_inputs):
+                tick, key = self.recorded_inputs[self.replay_index]
+                if tick == self.current_tick:
+                    event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+                    self.keyPressEvent(event, simulated=True)
+                    self.replay_index += 1
+                else:
+                    break
+
+        if not self.is_dead and not self.is_paused:
+            self.current_tick += 1
+
+        player_on_log = False
+        current_lane_type = "grass"
+
+        if not self.is_dead and not self.is_paused:
+            self.camera_scroll += 0.01 + (self.difficulty * 1.5)
+            if self.camera_scroll >= 1.0:
+                self.camera_scroll -= 1.0
+                self.player_y += 1
+                self.shift_lanes_down()
+
+        for lane in self.lanes:
+            if lane.y_pos == self.player_y:
+                current_lane_type = lane.lane_type
+
+            if lane.lane_type == "road" and len(lane.objects) > 1:
+                lane.objects.sort(key=lambda c: c.x_pos)
+                direction_right = lane.objects[0].goesRight
+                num_cars = len(lane.objects)
+                for j in range(num_cars):
+                    if direction_right:
+                        front_car = lane.objects[(j + 1) % num_cars]
+                        dist = front_car.x_pos - lane.objects[j].x_pos
+                        if dist < 0: dist += 16
+                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
+                            lane.objects[j].speed = front_car.speed
+                    else:
+                        front_car = lane.objects[(j - 1) % num_cars]
+                        dist = lane.objects[j].x_pos - front_car.x_pos
+                        if dist < 0: dist += 16
+                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
+                            lane.objects[j].speed = front_car.speed
+
+            for obj in lane.objects:
+                if obj.goesRight:
+                    obj.x_pos += obj.speed
+                else:
+                    obj.x_pos -= obj.speed
+
+                if lane.y_pos == self.player_y:
+                    obj_left, obj_right = obj.get_hitbox()
+                    player_left = self.player_x + 0.25
+                    player_right = self.player_x + 0.75
+
+                    if player_left < obj_right and player_right > obj_left:
+                        if obj.obj_type == "car" and not self.god_mode:
+                            self.game_over()
+                        elif obj.obj_type == "log":
+                            player_on_log = True
+                            if obj.goesRight:
+                                self.player_x += obj.speed
+                            else:
+                                self.player_x -= obj.speed
+                        elif obj.obj_type == "lilypad":
+                            player_on_log = True
+
+                if obj.x_pos > 12:
+                    obj.x_pos = -4
+                elif obj.x_pos < -4:
+                    obj.x_pos = 12
+
+        if current_lane_type == "river" and not player_on_log and not self.god_mode:
+            self.game_over()
+
+        if (self.player_x < -1 or self.player_x > 9 or self.player_y > 15) and not self.god_mode:
+            self.game_over()
 
         self.update()
 
@@ -1039,93 +1351,6 @@ class Game(QWidget):
                 event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
                 QApplication.postEvent(self, event)
 
-    def update_game_state(self):
-        if self.is_replay_mode and not self.is_dead and not self.is_paused:
-            while self.replay_index < len(self.recorded_inputs):
-                tick, key = self.recorded_inputs[self.replay_index]
-                if tick == self.current_tick:
-                    event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
-                    self.keyPressEvent(event, simulated=True)
-                    self.replay_index += 1
-                else:
-                    break
-
-        if not self.is_dead and not self.is_paused:
-            self.current_tick += 1
-
-        player_on_log = False
-        current_lane_type = "grass"
-
-        if not self.is_dead and not self.is_paused:
-            self.camera_scroll += 0.01 + (self.difficulty * 1.5)
-            if self.camera_scroll >= 1.0:
-                self.camera_scroll -= 1.0
-                self.player_y += 1
-                self.shift_lanes_down()
-
-        for lane in self.lanes:
-            if lane.y_pos == self.player_y:
-                current_lane_type = lane.lane_type
-
-            if lane.lane_type == "road" and len(lane.objects) > 1:
-                lane.objects.sort(key=lambda c: c.x_pos)
-                direction_right = lane.objects[0].goesRight
-                num_cars = len(lane.objects)
-                for j in range(num_cars):
-                    if direction_right:
-                        front_car = lane.objects[(j + 1) % num_cars]
-                        dist = front_car.x_pos - lane.objects[j].x_pos
-                        if dist < 0:
-                            dist += 16
-                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
-                            lane.objects[j].speed = front_car.speed
-                    else:
-                        front_car = lane.objects[(j - 1) % num_cars]
-                        dist = lane.objects[j].x_pos - front_car.x_pos
-                        if dist < 0:
-                            dist += 16
-                        if dist < 4.0 and lane.objects[j].speed > front_car.speed:
-                            lane.objects[j].speed = front_car.speed
-
-            for obj in lane.objects:
-                if obj.goesRight:
-                    obj.x_pos += obj.speed
-                else:
-                    obj.x_pos -= obj.speed
-
-                if lane.y_pos == self.player_y:
-                    obj_left, obj_right = obj.get_hitbox()
-                    player_left = self.player_x + 0.25
-                    player_right = self.player_x + 0.75
-
-                    if player_left < obj_right and player_right > obj_left:
-                        if obj.obj_type == "car":
-                            if not self.god_mode:
-                                self.game_over()
-                        elif obj.obj_type == "log":
-                            player_on_log = True
-                            if obj.goesRight:
-                                self.player_x += obj.speed
-                            else:
-                                self.player_x -= obj.speed
-                        elif obj.obj_type == "lilypad":
-                            player_on_log = True
-
-                if obj.x_pos > 12:
-                    obj.x_pos = -4
-                elif obj.x_pos < -4:
-                    obj.x_pos = 12
-
-        if current_lane_type == "river" and not player_on_log:
-            if not self.god_mode:
-                self.game_over()
-
-        if self.player_x < -1 or self.player_x > 9 or self.player_y > 15:
-            if not self.god_mode:
-                self.game_over()
-
-        self.update()
-
     def load_config(self):
         default_config = {
             "base_difficulty": 0.0,
@@ -1172,6 +1397,95 @@ class Game(QWidget):
 
         self.update()
 
+
+class LobbyMenu(QWidget):
+    back = pyqtSignal()
+    ready = pyqtSignal()
+    unready = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.is_ready = False
+        self.is_locked = False
+        self.setStyleSheet("""
+            QWidget { background: transparent; }
+            QPushButton {
+                background-color: #e74c3c; 
+                color: white; 
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: bold;
+                font-family: Press Start 2P;
+                min-width: 250px;
+                min-height: 55px;
+            }
+            QPushButton:hover{ background-color: #c0392b; }
+            QPushButton:disabled { background-color: #7f8c8d; }
+            QLabel {
+                color: rgb(255, 255, 255);
+                font-family: Press Start 2P;
+                font-size: 18px;
+                font-weight: bold;
+                background: transparent;
+            }
+            QLabel#players_list { font-size: 14px; color: #f1c40f; }
+        """)
+        layout = QVBoxLayout()
+        title = QLabel("Lobby", self)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.players_label = QLabel("Players:\n", self)
+        self.players_label.setObjectName("players_list")
+        self.players_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.ready_btn = QPushButton("Ready (0/0)", self)
+        self.ready_btn.setEnabled(False)
+        self.back_btn = QPushButton("Disconnect", self)
+
+        self.ready_btn.clicked.connect(self.on_ready_clicked)
+        self.back_btn.clicked.connect(lambda: self.back.emit())
+
+        layout.addStretch()
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(20)
+        layout.addWidget(self.players_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(30)
+        layout.addWidget(self.ready_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.back_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def update_lobby(self, players_str, ready_str):
+        players = players_str.split(',')
+        self.players_label.setText("Players:\n" + "\n".join(players))
+        if self.is_locked:
+            return
+        if getattr(self, 'is_ready', False):
+            self.ready_btn.setText(f"Unready ({ready_str})")
+            self.ready_btn.setEnabled(True)
+        else:
+            self.ready_btn.setText(f"Ready ({ready_str})")
+            self.ready_btn.setEnabled(len(players) > 1)
+
+    def on_ready_clicked(self):
+        if not hasattr(self, 'is_ready'):
+            self.is_ready = False
+        self.is_ready = not self.is_ready
+        if self.is_ready:
+            self.ready.emit()
+        else:
+            self.unready.emit()
+
+    def lock_buttons(self):
+        self.is_locked = True
+        self.ready_btn.setEnabled(False)
+        self.back_btn.setEnabled(False)
+
+    def unlock_buttons(self):
+        self.is_locked = False
+        self.back_btn.setEnabled(True)
+        self.ready_btn.setEnabled(True)
+
 class Options(QWidget):
     back_to_menu = pyqtSignal()
     change_resolution = pyqtSignal(str)
@@ -1186,7 +1500,7 @@ class Options(QWidget):
 
         self.setStyleSheet("""
             QWidget#options_screen {
-                background-color: #2b2b2b; 
+                background: transparent; 
             }
             QPushButton {
                 background-color: #e74c3c; 
@@ -1293,7 +1607,7 @@ class Options(QWidget):
         layout.addWidget(self.res_options, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.god_mode_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.debug_mode_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        #layout.addWidget(self.river_block_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        # layout.addWidget(self.river_block_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.ai_mode_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.apply_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.back_btn, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -1313,16 +1627,134 @@ class Options(QWidget):
 
     def emit_river_block(self, state):
         self.river_block_changed.emit(state)
+
     def emit_ai_mode(self, state):
         self.ai_mode_changed.emit(state)
 
-class Menu(QWidget):
+
+class SingleplayerMenu(QWidget):
     new_game = pyqtSignal()
     load_game = pyqtSignal()
-    options = pyqtSignal()
+    back = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setStyleSheet("""
+            QWidget { background: transparent; }
+            QPushButton {
+                background-color: #e74c3c; 
+                color: white; 
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: bold;
+                font-family: Press Start 2P;
+                min-width: 250px;
+                min-height: 55px;
+            }
+            QPushButton:hover{ background-color: #c0392b; }
+            QLabel {
+                color: rgb(255, 255, 255);
+                font-family: Press Start 2P;
+                font-size: 24px;
+                font-weight: bold;
+                background: transparent;
+            }
+        """)
+        layout = QVBoxLayout()
+        title = QLabel("Singleplayer", self)
+
+        self.new_game_btn = QPushButton("New Game", self)
+        self.load_game_btn = QPushButton("Load Save", self)
+        self.back_btn = QPushButton("Back", self)
+
+        self.new_game_btn.clicked.connect(lambda: self.new_game.emit())
+        self.load_game_btn.clicked.connect(lambda: self.load_game.emit())
+        self.back_btn.clicked.connect(lambda: self.back.emit())
+
+        layout.addStretch()
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(30)
+        layout.addWidget(self.new_game_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.load_game_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.back_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
+        self.setLayout(layout)
+
+
+class MultiplayerMenu(QWidget):
+    back = pyqtSignal()
+    join_game = pyqtSignal(str)  # Nowy sygnał wysyłający nick
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("""
+            QWidget { background: transparent; }
+            QPushButton {
+                background-color: #e74c3c; 
+                color: white; 
+                border-radius: 12px;
+                font-size: 16px;
+                font-weight: bold;
+                font-family: Press Start 2P;
+                min-width: 250px;
+                min-height: 55px;
+            }
+            QPushButton:hover{ background-color: #c0392b; }
+            QLabel {
+                color: rgb(255, 255, 255);
+                font-family: Press Start 2P;
+                font-size: 24px;
+                font-weight: bold;
+                background: transparent;
+            }
+            QLineEdit {
+                background-color: white;
+                color: black;
+                border-radius: 12px;
+                font-size: 16px;
+                font-family: Press Start 2P;
+                min-width: 230px;
+                min-height: 55px;
+                padding-left: 15px;
+            }
+        """)
+        layout = QVBoxLayout()
+        title = QLabel("Multiplayer", self)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.nickname_input = QLineEdit(self)
+        self.nickname_input.setPlaceholderText("Nickname")
+        self.nickname_input.setMaxLength(16)
+
+        self.join_btn = QPushButton("Join Game", self)
+        self.back_btn = QPushButton("Back", self)
+
+        self.join_btn.clicked.connect(self.on_join_clicked)
+        self.back_btn.clicked.connect(lambda: self.back.emit())
+
+        layout.addStretch()
+        layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addSpacing(30)
+        layout.addWidget(self.nickname_input, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.join_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.back_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def on_join_clicked(self):
+        nickname = self.nickname_input.text().strip()
+        if nickname:
+            self.join_game.emit(nickname)
+
+class Menu(QWidget):
+    singleplayer = pyqtSignal()
+    multiplayer = pyqtSignal()
+    options = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setStyleSheet("""
+                    QWidget { background: transparent; }
                     QPushButton {
                         background-color: #e74c3c; 
                         color: white; 
@@ -1341,6 +1773,7 @@ class Menu(QWidget):
                         font-family: Press Start 2P;
                         font-size: 24px;
                         font-weight: bold;
+                        background: transparent;
                     }
                     QLabel#author{
                         font-size: 12px;
@@ -1350,33 +1783,30 @@ class Menu(QWidget):
                 """)
         menu_layout = QVBoxLayout()
 
-        #Title
         title = QLabel("Crossy Road", self)
         author = QLabel("Filip Pietrzak 198275", self)
         author.setObjectName("author")
 
-        #Setting up buttons
-        self.new_game_btn = QPushButton("New Game", self)
-        self.load_game_btn = QPushButton("Load Save", self)
+        self.singleplayer_btn = QPushButton("Singleplayer", self)
+        self.multiplayer_btn = QPushButton("Multiplayer", self)
         self.option_btn = QPushButton("Options", self)
         self.exit_btn = QPushButton("Exit", self)
 
-        self.new_game_btn.clicked.connect(lambda: self.new_game.emit())
-        self.load_game_btn.clicked.connect(lambda: self.load_game.emit())
+        self.singleplayer_btn.clicked.connect(lambda: self.singleplayer.emit())
+        self.multiplayer_btn.clicked.connect(lambda: self.multiplayer.emit())
         self.option_btn.clicked.connect(lambda: self.options.emit())
         self.exit_btn.clicked.connect(QApplication.instance().quit)
 
         menu_layout.addStretch()
-        menu_layout.addWidget(title,alignment=Qt.AlignmentFlag.AlignCenter)
-        menu_layout.addWidget(author,alignment=Qt.AlignmentFlag.AlignCenter)
-        menu_layout.addWidget(self.new_game_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        menu_layout.addWidget(self.load_game_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        menu_layout.addWidget(title, alignment=Qt.AlignmentFlag.AlignCenter)
+        menu_layout.addWidget(author, alignment=Qt.AlignmentFlag.AlignCenter)
+        menu_layout.addWidget(self.singleplayer_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        menu_layout.addWidget(self.multiplayer_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         menu_layout.addWidget(self.option_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         menu_layout.addWidget(self.exit_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         menu_layout.addStretch()
 
         self.setLayout(menu_layout)
-
 
 def main():
     app = QApplication(sys.argv)
@@ -1395,5 +1825,7 @@ def main():
     ex = MainApp()
     ex.show()
     sys.exit(app.exec())
+
+
 if __name__ == "__main__":
     main()
